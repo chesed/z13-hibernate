@@ -122,7 +122,20 @@ kmsg "hook: mt79xx lsmod: ${_mt_mods:-none}"
 if [ -d /sys/module/vboxdrv ]; then
   _vbox_user=$(loginctl list-sessions --no-legend 2>/dev/null | awk '($4 == "active" || $3 == "seat0") { print $3; exit }')
   [ -z "$_vbox_user" ] && _vbox_user=gunther
-  _running=$(sudo -u "$_vbox_user" VBoxManage list runningvms 2>/dev/null | awk -F'"' '{print $2}')
+  # IMPORTANT: do NOT let VBoxManage failure abort the hook.  When the machine
+  # is coming out of S2idle (the long-sleep-hibernate path), vboxsvc is in
+  # sleep-suspended state and VBoxManage hangs for its full internal timeout
+  # (~60 s) before exiting non-zero.  With 'set -e -o pipefail' the failing
+  # pipeline assignment '_running=$(VBoxManage ... | awk)' exits the hook with
+  # status 1, aborting hibernate silently — confirmed 2026-08-19 17:24 and
+  # 2026-08-20 10:24 (vboxdrv loaded, machine came out of long S2idle).
+  # Fix: short timeout (10 s) so we fail fast, and '|| true' so set -e does
+  # not kill the hook.  A missed VM save is logged but hibernate proceeds;
+  # VirtualBox recovers from an un-saved state on resume.
+  _vbox_raw=""
+  _vbox_raw=$(timeout 10 sudo -u "$_vbox_user" VBoxManage list runningvms 2>/dev/null) \
+    || { kmsg "hook: WARNING: VBoxManage list runningvms failed/timed-out (vboxsvc unavailable? skipping VM save)"; _vbox_raw=""; }
+  _running=$(echo "$_vbox_raw" | awk -F'"' '{print $2}')
   if [ -n "$_running" ]; then
     kmsg "hook: saving running VMs before hibernate: $(echo "$_running" | tr '\n' ',')"
     while IFS= read -r _vm; do
@@ -133,11 +146,11 @@ if [ -d /sys/module/vboxdrv ]; then
     done <<< "$_running"
     sleep 1
   else
-    kmsg "hook: vboxdrv loaded, no VMs running"
+    kmsg "hook: vboxdrv loaded, no VMs running (or VBoxManage unavailable)"
   fi
-  modprobe -r vboxnetflt vboxnetadp vboxdrv 2>/dev/null \
+  timeout 15 modprobe -r vboxnetflt vboxnetadp vboxdrv 2>/dev/null \
     && kmsg "hook: vbox modules unloaded" \
-    || kmsg "hook: vbox modules already gone"
+    || kmsg "hook: WARNING: vbox module unload failed/timed-out (proceeding; vboxdrv in image is harmless on S4 shutdown)"
 fi
 
 # 'shutdown' mode writes the image then does a plain poweroff rather than ACPI S4,
