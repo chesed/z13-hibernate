@@ -272,10 +272,28 @@ DO NOT switch virtual terminals — GPU suspend is about to begin.
       if [ "$lid_state" = "closed" ] && [ "$elapsed" -ge "$MAX_S2IDLE_SEC" ]; then
         # Autonomous wake, lid still closed, slept long enough → hibernate.
         # s2idle-auto-hib.sh (run by the WakeSystem timer unit) may have already
-        # set HIB_PENDING and scheduled z13-long-sleep-hibernate; skip if so.
+        # set HIB_PENDING and scheduled z13-long-sleep-hibernate.
+        # Check carefully: if HIB_PENDING exists AND the timer is still live,
+        # skip (genuine duplicate).  But if HIB_PENDING exists and the timer is
+        # GONE, the previous attempt was refused ("Action suspend already in
+        # progress" — machine was mid-S2idle when the 15s timer fired, confirmed
+        # 2026-08-30 03:35:37); retry in that case.
         if [ -f "$HIB_PENDING" ]; then
-          echo "s2idle-resume-fixup: hibernate already pending (from WakeSystem timer) — skipping duplicate"
-          rm -f "$SLEEP_SESSION_START"
+          if systemctl is-active --quiet z13-long-sleep-hibernate.timer 2>/dev/null \
+             || systemctl is-active --quiet z13-long-sleep-hibernate.service 2>/dev/null; then
+            echo "s2idle-resume-fixup: hibernate timer still active — skipping duplicate"
+            rm -f "$SLEEP_SESSION_START"
+          else
+            echo "s2idle-resume-fixup: HIB_PENDING set but timer gone (hibernate refused?) — retrying"
+            # Don't delete SLEEP_SESSION_START: keep it for further retries if
+            # this attempt is also refused (same race can recur).
+            touch "$HIB_PENDING"
+            systemd-run --on-active=15s --unit=z13-long-sleep-hibernate \
+              bash -c "systemctl hibernate \
+                && rm -f /run/z13-hibernate-pending /run/z13-sleep-session-start \
+                || { echo 'z13-long-sleep-hibernate: hibernate refused — HIB_PENDING cleared, SLEEP_SESSION_START kept for retry'; rm -f /run/z13-hibernate-pending; }" \
+              || rm -f "$HIB_PENDING"
+          fi
         else
           echo "s2idle-resume-fixup: autonomous wake after ${elapsed}s, lid closed — scheduling hibernate"
           wall "
@@ -286,10 +304,14 @@ Saving state to disk in 15 seconds to protect battery.
 DO NOT switch virtual terminals — GPU suspend is about to begin.
 Machine will resume on next power-on.  This is NOT a crash or hang.
 "
-          rm -f "$SLEEP_SESSION_START"
+          # Do NOT delete SLEEP_SESSION_START here — keep it so that if
+          # hibernate is refused (machine mid-S2idle), the next 5-min alarm
+          # can retry via s2idle-auto-hib.sh.
           touch "$HIB_PENDING"
           systemd-run --on-active=15s --unit=z13-long-sleep-hibernate \
-            bash -c "systemctl hibernate; rm -f $HIB_PENDING" \
+            bash -c "systemctl hibernate \
+              && rm -f /run/z13-hibernate-pending /run/z13-sleep-session-start \
+              || { echo 'z13-long-sleep-hibernate: hibernate refused — will retry on next wake'; rm -f /run/z13-hibernate-pending; }" \
             || rm -f "$HIB_PENDING"
         fi
       elif [ "$lid_state" = "open" ]; then

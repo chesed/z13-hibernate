@@ -95,8 +95,18 @@ else
     exit 0
 fi
 
-rm -f "$SLEEP_SESSION_START"
+# Do NOT delete SLEEP_SESSION_START here.  If hibernate is refused
+# ("Action suspend already in progress" — the machine is mid-S2idle when
+# the 15s timer fires, confirmed 2026-08-30 03:35:37), deleting it now
+# means the next 5-min WakeSystem alarm sees no marker and exits at the
+# top-of-script guard, so the machine sleeps indefinitely with no retry.
+# Instead: delete both markers inside the timer command on SUCCESS only.
+# On failure (hibernate refused), HIB_PENDING is cleared so the next
+# alarm's auto-hib.sh will reschedule; SLEEP_SESSION_START survives so
+# auto-hib.sh doesn't exit early.
 touch "$HIB_PENDING"
 systemd-run --on-active=15s --unit=z13-long-sleep-hibernate \
-    bash -c "systemctl hibernate; rm -f $HIB_PENDING" \
+    bash -c "systemctl hibernate \
+        && rm -f /run/z13-hibernate-pending /run/z13-sleep-session-start \
+        || { echo 'z13-long-sleep-hibernate: hibernate refused (suspend in progress) — will retry on next 5-min alarm'; rm -f /run/z13-hibernate-pending; }" \
     || { echo "s2idle-auto-hib: WARNING: failed to schedule hibernate"; rm -f "$HIB_PENDING"; }

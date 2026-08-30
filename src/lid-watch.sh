@@ -72,7 +72,29 @@ Machine will resume on next power-on.  This is NOT a crash or hang.
       sleep 5
     fi
   else
-    [ -n "$closed_since" ] && echo "lid-watch: lid reopened inside debounce window — ignored"
+    if [ -n "$closed_since" ]; then
+      echo "lid-watch: lid reopened — waking display (SimulateUserActivity)"
+      # The machine may be awake but display-off: either it woke from S2idle
+      # due to spurious events (asus_wmi 0xe9 storm, etc.) without the post-hook
+      # running SimulateUserActivity, OR it was stuck awake-but-dark from a
+      # failed suspend entry.  KDE's DPMS stays off in both cases.  Kick it
+      # here so the user doesn't see a black screen after opening the lid.
+      # This also covers the "debounce window" reopen: cheap to call twice.
+      _uid=$(id -u gunther 2>/dev/null || echo "")
+      if [ -n "$_uid" ]; then
+        _xdg="/run/user/$_uid"
+        for _w in wayland-0 wayland-1 wayland-2; do
+          if [ -S "$_xdg/$_w" ]; then
+            sudo -u gunther env \
+              XDG_RUNTIME_DIR="$_xdg" \
+              DBUS_SESSION_BUS_ADDRESS="unix:path=$_xdg/bus" \
+              WAYLAND_DISPLAY="$_w" \
+              qdbus6 org.kde.ScreenSaver /ScreenSaver SimulateUserActivity 2>/dev/null || true
+            break
+          fi
+        done
+      fi
+    fi
     closed_since=""
   fi
 done
