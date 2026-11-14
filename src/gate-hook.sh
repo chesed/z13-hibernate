@@ -45,7 +45,7 @@ fi
 # (amdgpu) can disable the display pipeline cleanly.  Dirty amdgpu GPU VM state causes the
 # notifier to hang indefinitely at "PM: hibernation: hibernation entry".  Sources of dirty
 # state: kscreenlocker crash on previous S4 resume, or a cancelled ollama inference job.
-_hib_user=gunther
+_hib_user=tommy
 _hib_uid=$(id -u "$_hib_user" 2>/dev/null || echo "")
 if [ -n "$_hib_uid" ]; then
   _hib_xdg="/run/user/$_hib_uid"

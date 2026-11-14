@@ -140,7 +140,7 @@ make bootimage
 ```
 
 `make deploy` also sets PowerDevil's lid action to "Do nothing" for `PDUSER`
-(default `gunther`) — required because `z13-lid-watch.service` is the only
+(default `tommy`, override with `make deploy PDUSER=<user>`) — required because `z13-lid-watch.service` is the only
 thing allowed to act on the lid switch.  Verify in System Settings → Power
 Management if in doubt.  The logind drop-in takes effect on the next reboot.
 

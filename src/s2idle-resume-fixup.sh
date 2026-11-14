@@ -199,7 +199,7 @@ case "${1:-}/${2:-}" in
       # Step 2: SimulateUserActivity via D-Bus — tells KDE to re-enable DPMS
       # outputs.  Framebuffer unblank alone does not wake KWin's output pipeline
       # on Wayland.  Timeout 10 s: cap a hung qdbus6 to prevent blocking the gate.
-      _uid=$(id -u gunther 2>/dev/null || echo "")
+      _uid=$(id -u tommy 2>/dev/null || echo "")
       if [ -n "$_uid" ]; then
         _xdg="/run/user/$_uid"
         _wl=""
@@ -207,12 +207,12 @@ case "${1:-}/${2:-}" in
           [ -S "$_xdg/$_w" ] && _wl="$_w" && break
         done
         if [ -n "$_wl" ]; then
-          _qdbus_env="sudo -u gunther env \
+          _qdbus_env="sudo -u tommy env \
             XDG_RUNTIME_DIR=$_xdg \
             DBUS_SESSION_BUS_ADDRESS=unix:path=$_xdg/bus \
             WAYLAND_DISPLAY=$_wl"
           timeout 10 $_qdbus_env \
-            qdbus6 org.kde.ScreenSaver /ScreenSaver SimulateUserActivity 2>/dev/null \
+            qdbus6 org.freedesktop.ScreenSaver /ScreenSaver SimulateUserActivity 2>/dev/null \
             && echo "s2idle-resume-fixup: SimulateUserActivity sent (DPMS wake)" \
             || true
           # KWin Wayland occasionally stops processing pointer button events after

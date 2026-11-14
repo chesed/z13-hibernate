@@ -120,8 +120,9 @@ kmsg "hook: mt79xx lsmod: ${_mt_mods:-none}"
 # vboxdrv stayed loaded into the snapshot and the restore deadlocked in
 # stop_machine). /sys/module is race-free.
 if [ -d /sys/module/vboxdrv ]; then
-  _vbox_user=$(loginctl list-sessions --no-legend 2>/dev/null | awk '($4 == "active" || $3 == "seat0") { print $3; exit }')
-  [ -z "$_vbox_user" ] && _vbox_user=gunther
+  # loginctl columns: 1=SESSION 2=UID 3=USER 4=SEAT 5=LEADER 6=CLASS 7=TTY
+  _vbox_user=$(loginctl list-sessions --no-legend 2>/dev/null | awk '($4=="seat0" || $6=="user") { print $3; exit }')
+  [ -z "$_vbox_user" ] && _vbox_user=tommy
   # IMPORTANT: do NOT let VBoxManage failure abort the hook.  When the machine
   # is coming out of S2idle (the long-sleep-hibernate path), vboxsvc is in
   # sleep-suspended state and VBoxManage hangs for its full internal timeout

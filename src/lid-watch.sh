@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Debounced lid-switch suspend for the Z13.
+# Debounced lid-switch handler for the Z13.
 #
 # On this machine the "lid" is the detachable keyboard cover, so accidental
 # close + immediate reopen is a NORMAL event. logind and PowerDevil act on
@@ -8,26 +8,92 @@
 # a hard wedge (2026-06-12 00:18, wallpaper-frozen, power-cycle needed) —
 # even with pm_async=0 and the 2s pre-suspend settle.
 #
-# Policy here: suspend only after the lid has been closed for DEBOUNCE_SEC
-# without interruption. A reopen inside the window is a complete no-op — no
-# suspend ever starts, so there is nothing to race.
+# 2026-11-14 POLICY CHANGE — lid-close now LOCKS + BLANKS, it no longer
+# sleeps.  On this amdgpu machine the s2idle transition is unreliable (it
+# aborts *after* the screen-off prep, leaving an awake-but-locked machine)
+# and hibernate is broken (image write fails with ENOMEM).  So instead of
+# racing a broken sleep transition, lid-close locks the KDE session and
+# blanks the display.  No sleep is attempted, so there is nothing to race
+# and the "screen off -> lock screen -> still awake" dance is gone.  The
+# machine stays fully awake while "closed" (fine on AC; on battery this
+# drains the battery — accepted trade-off, 2026-11-14).  Lid-open wakes the
+# display; the user unlocks the lock screen manually (that is the "unlock"
+# half of the flow).
+#
+# Debounce is kept: a reopen inside DEBOUNCE_SEC is a complete no-op, so an
+# accidental flip never locks the session.
 #
 # Requires that nobody else acts on the lid:
 #   - logind drop-in: HandleLidSwitch=ignore (takes effect on reboot;
 #     NEVER restart logind live — see project notes)
 #   - PowerDevil: "When laptop lid is closed" = "Do nothing" (both profiles)
-#
-# After resume, if the lid is still closed the loop simply debounces again
-# and re-suspends — which is the desired behavior for a spurious wake.
 
 LID_STATE=/proc/acpi/button/lid/LID/state
 DEBOUNCE_SEC=3
 POLL_SEC=1
 
+# ── Resolve the active graphical user + Wayland session ─────────────────────
+# The original scripts hardcoded a username that no longer exists on this
+# machine (so every user-facing action failed silently).  Resolve the user
+# dynamically instead, with a sane fallback for this single-user box.
+# Sets: R_USER R_UID R_XDG R_WL R_ENV
+_resolve_user() {
+  R_USER=$(loginctl list-sessions --no-legend 2>/dev/null \
+           | awk '($4=="seat0" || $6=="user"){ print $3; exit }')
+  [ -z "$R_USER" ] && R_USER=${SUDO_USER:-tommy}
+  R_UID=$(id -u "$R_USER" 2>/dev/null || echo "")
+  R_XDG="/run/user/${R_UID}"
+  R_WL=""
+  if [ -n "$R_UID" ]; then
+    for _w in wayland-0 wayland-1 wayland-2 wayland-3 wayland-4; do
+      [ -S "${R_XDG}/${_w}" ] && R_WL="$_w" && break
+    done
+  fi
+  R_ENV="XDG_RUNTIME_DIR=${R_XDG} DBUS_SESSION_BUS_ADDRESS=unix:path=${R_XDG}/bus"
+  [ -n "$R_WL" ] && R_ENV="${R_ENV} WAYLAND_DISPLAY=${R_WL}"
+  return 0
+}
+
+# Live KDE ScreenSaver service on this Plasma 6 session (org.kde.ScreenSaver
+# does NOT exist here — calls to it failed silently).  This one has Lock(),
+# SetActive(bool) and SimulateUserActivity().
+_SCREENSAYER_SVC=org.freedesktop.ScreenSaver
+
+# Lid-close action: lock the KDE session + blank the display.  No sleep.
+_lock_blank() {
+  _resolve_user
+  if [ -n "$R_UID" ] && [ -S "${R_XDG}/bus" ]; then
+    echo "lid-watch: lid closed >= ${DEBOUNCE_SEC}s — locking + blanking (user=$R_USER, no sleep)"
+    sudo -u "$R_USER" env $R_ENV \
+      qdbus6 "$_SCREENSAYER_SVC" /ScreenSaver Lock 2>/dev/null \
+      || echo "lid-watch: Lock() failed (session gone?)"
+    # Blank the display (KDE DPMS will keep it off); non-fatal if it no-ops.
+    sudo -u "$R_USER" env $R_ENV \
+      qdbus6 "$_SCREENSAYER_SVC" /ScreenSaver SetActive true 2>/dev/null || true
+  else
+    echo "lid-watch: no active user session found — falling back to suspend"
+    systemctl suspend || echo "lid-watch: suspend request failed"
+  fi
+}
+
+# Lid-open action: wake the display.  The session stays LOCKED — the user
+# unlocks the lock screen manually (that is the "unlock" half of the flow).
+_wake_display() {
+  _resolve_user
+  [ -z "$R_UID" ] && return 0
+  echo "lid-watch: lid reopened — waking display (user=$R_USER)"
+  sudo -u "$R_USER" env $R_ENV \
+    qdbus6 "$_SCREENSAYER_SVC" /ScreenSaver SimulateUserActivity 2>/dev/null || true
+}
+
 closed_since=""
+lid_locked=0   # set when we locked for a closed-lid episode; cleared on reopen
 while sleep "$POLL_SEC"; do
   state=$(awk '{print $2}' "$LID_STATE" 2>/dev/null) || continue
   if [ "$state" = "closed" ]; then
+    # Already locked for this closed-lid episode: nothing to do while the lid
+    # stays closed (avoids re-lock + log spam on every poll).
+    [ "$lid_locked" = "1" ] && continue
     now=$(date +%s)
     if [ -z "$closed_since" ]; then
       closed_since=$now
@@ -35,66 +101,24 @@ while sleep "$POLL_SEC"; do
       continue
     fi
     if [ $(( now - closed_since )) -ge "$DEBOUNCE_SEC" ]; then
-      # Stand down while any sleep cycle is in flight: closing the lid over
-      # a running hibernate (the normal "initiate and put it away" move)
-      # must not inject a competing suspend. The marker also covers the
-      # ~15s post-resume recovery; if the lid is still closed after the
-      # marker clears, the timer below has already matured and we suspend
-      # on the next poll — the right behavior for "resumed inside the bag".
+      # Stand down while any sleep cycle is in flight: closing the lid over a
+      # running manual hibernate must not inject a competing action.  (Kept
+      # for safety; lid-close itself no longer sleeps.)
       if [ -f /run/z13-was-hibernated ] \
          || [ -f /run/z13-hibernate-pending ] \
          || systemctl list-jobs --no-legend 2>/dev/null | grep -qE 'sleep\.target|suspend\.target|hibernate\.target'; then
         continue
       fi
       closed_since=""
-      # On battery: hibernate directly — avoids the unreliable s2idle→hibernate
-      # transition and prevents battery drain if AC is later removed mid-sleep.
-      bat_status=$(cat /sys/class/power_supply/BAT0/status 2>/dev/null || echo "Unknown")
-      if [ "$bat_status" = "Discharging" ]; then
-        echo "lid-watch: lid closed >= ${DEBOUNCE_SEC}s, on battery — hibernating"
-        # Broadcast to all VTs before hibernate: user may have a text VT open
-        # and cannot see KDE notifications.  DO NOT switch VTs after this —
-        # amdgpu will be suspended imminently and VT switch will lock the GPU.
-        wall "
-*** SYSTEM HIBERNATING — LID CLOSED ON BATTERY ***
-
-Lid has been closed.  Saving state to disk (lid-close hibernate).
-DO NOT switch virtual terminals — GPU suspend is about to begin.
-Machine will resume on next power-on.  This is NOT a crash or hang.
-"
-        systemctl hibernate || echo "lid-watch: hibernate request failed"
-      else
-        echo "lid-watch: lid closed >= ${DEBOUNCE_SEC}s — suspending"
-        systemctl suspend || echo "lid-watch: suspend request failed (already sleeping?)"
-      fi
-      # The loop is frozen during sleep; this just skips the moments
-      # between the request and the actual freeze.
-      sleep 5
+      lid_locked=1
+      _lock_blank
+      sleep 1
     fi
   else
-    if [ -n "$closed_since" ]; then
-      echo "lid-watch: lid reopened — waking display (SimulateUserActivity)"
-      # The machine may be awake but display-off: either it woke from S2idle
-      # due to spurious events (asus_wmi 0xe9 storm, etc.) without the post-hook
-      # running SimulateUserActivity, OR it was stuck awake-but-dark from a
-      # failed suspend entry.  KDE's DPMS stays off in both cases.  Kick it
-      # here so the user doesn't see a black screen after opening the lid.
-      # This also covers the "debounce window" reopen: cheap to call twice.
-      _uid=$(id -u gunther 2>/dev/null || echo "")
-      if [ -n "$_uid" ]; then
-        _xdg="/run/user/$_uid"
-        for _w in wayland-0 wayland-1 wayland-2; do
-          if [ -S "$_xdg/$_w" ]; then
-            sudo -u gunther env \
-              XDG_RUNTIME_DIR="$_xdg" \
-              DBUS_SESSION_BUS_ADDRESS="unix:path=$_xdg/bus" \
-              WAYLAND_DISPLAY="$_w" \
-              qdbus6 org.kde.ScreenSaver /ScreenSaver SimulateUserActivity 2>/dev/null || true
-            break
-          fi
-        done
-      fi
+    if [ -n "$closed_since" ] || [ "$lid_locked" = "1" ]; then
+      _wake_display
     fi
     closed_since=""
+    lid_locked=0
   fi
 done

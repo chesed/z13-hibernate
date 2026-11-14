@@ -12,7 +12,8 @@
 PREFIX  ?= /usr
 DESTDIR ?=
 # Desktop user whose PowerDevil config deploy adjusts (lid → Do nothing).
-PDUSER  ?= gunther
+# Override with: make deploy PDUSER=<your-user>
+PDUSER  ?= tommy
 
 .PHONY: install deploy bootimage uninstall
 

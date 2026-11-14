@@ -155,7 +155,7 @@ fi
 
 # ── Low-battery decisions ────────────────────────────────────────────────────
 # Locate user Wayland session once; used by both notification paths below.
-_notify_uid=$(id -u gunther 2>/dev/null || echo "")
+_notify_uid=$(id -u tommy 2>/dev/null || echo "")
 _notify_xdg="" _notify_wl="" _notify_dbus=""
 if [ -n "$_notify_uid" ]; then
     _notify_xdg="/run/user/$_notify_uid"
@@ -171,7 +171,7 @@ fi
 _notify() {
     # _notify URGENCY TIMEOUT_MS TITLE BODY
     [ -z "$_notify_wl" ] && return 0
-    sudo -u gunther env \
+    sudo -u tommy env \
         XDG_RUNTIME_DIR="$_notify_xdg" \
         DBUS_SESSION_BUS_ADDRESS="$_notify_dbus" \
         WAYLAND_DISPLAY="$_notify_wl" \
@@ -180,7 +180,7 @@ _notify() {
 
 _alert_sound() {
     [ -z "$_notify_wl" ] && return 0
-    sudo -u gunther env \
+    sudo -u tommy env \
         XDG_RUNTIME_DIR="$_notify_xdg" \
         DBUS_SESSION_BUS_ADDRESS="$_notify_dbus" \
         WAYLAND_DISPLAY="$_notify_wl" \

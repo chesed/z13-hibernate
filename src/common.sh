@@ -439,8 +439,9 @@ restore_screen() {
   done
   # User-level wake: must pass Wayland/DBUS env or these calls fail silently.
   local user uid xdg_rt dbus_addr wl_display uenv
-  user=$(loginctl list-sessions --no-legend 2>/dev/null | awk '($4 == "active" || $3 == "seat0") { print $3; exit }')
-  [ -z "$user" ] && user=${SUDO_USER:-gunther}
+  # loginctl columns: 1=SESSION 2=UID 3=USER 4=SEAT 5=LEADER 6=CLASS 7=TTY
+  user=$(loginctl list-sessions --no-legend 2>/dev/null | awk '($4=="seat0" || $6=="user") { print $3; exit }')
+  [ -z "$user" ] && user=${SUDO_USER:-tommy}
   uid=$(id -u "$user" 2>/dev/null || echo "")
   if [ -n "$uid" ] && id "$user" >/dev/null 2>&1; then
     xdg_rt="/run/user/$uid"
